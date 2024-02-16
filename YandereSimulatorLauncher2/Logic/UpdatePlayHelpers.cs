@@ -21,6 +21,16 @@ namespace YandereSimulatorLauncher2.Logic
 
         public static string GameExePath { get { return "YandereSimulator\\YandereSimulator.exe"; } }
         public static string GameDirectoryPath { get { return "YandereSimulator"; } }
+        public static string TempDirectoryPath { get { return "Temp"; } }
+        public static string[] GameCustomModeDirectories = {
+            "YandereSimulator\\YandereSimulator_Data\\StreamingAssets\\CustomMode",
+            "YandereSimulator\\YandereSimulator_Data\\StreamingAssets\\PortraitsCustom"
+        };
+        public static string[] GameCustomModeJSONFiles = {
+            "YandereSimulator\\YandereSimulator_Data\\StreamingAssets\\JSON\\Custom.json",
+            "YandereSimulator\\YandereSimulator_Data\\StreamingAssets\\JSON\\CustomTopics.json",
+            "YandereSimulator\\YandereSimulator_Data\\StreamingAssets\\JSON\\Misc.json"
+        };
         public static string GameVersionHttp { get { return "://www.yanderesimulator.com/version.txt" + AntiCacheToken; } }
         public static string GameFileHttpMinusCacheBuster = "https://dl.yanderesimulator.com/latest.zip"; //Add ?{{versionOnSite}} to it.
         public static string GameVersionFilePath = "YandereSimulator\\GameVersion.txt";
@@ -57,7 +67,7 @@ namespace YandereSimulatorLauncher2.Logic
         public static bool IsGameRunning()
         {
             Process[] listOfRunningProcesses = Process.GetProcesses();
-            
+
             foreach (Process currentProcess in listOfRunningProcesses)
             {
                 if (currentProcess.ProcessName.ToLower().Trim().Equals("yanderesimulator"))
@@ -82,6 +92,28 @@ namespace YandereSimulatorLauncher2.Logic
 
             if (System.IO.Directory.Exists(GameDirectoryPath))
             {
+                // Nothing in here should persist after we finish updating, so this means we crashed or closed mid-update somehow.
+                // We shouldn't try to retake a backup if one already exists.
+                if (!System.IO.Directory.Exists(TempDirectoryPath))
+                {
+                    System.IO.Directory.CreateDirectory(TempDirectoryPath);
+                    foreach (string directory_to_backup in GameCustomModeDirectories)
+                    {
+                        // Take each directory we want to copy and move it into the temp folder; preserve the structure.
+                        // We have to create any missing folders first.
+                        DirectoryInfo destinationDirectoryInfo = new DirectoryInfo(System.IO.Path.Combine(TempDirectoryPath, directory_to_backup));
+                        destinationDirectoryInfo.Parent.Create();
+                        // Now we can move the actual directory.
+                        System.IO.Directory.Move(directory_to_backup, System.IO.Path.Combine(TempDirectoryPath, directory_to_backup));
+                    }
+                    foreach (string file_to_backup in GameCustomModeJSONFiles)
+                    {
+                        // Do the same for each individual JSON file.
+                        FileInfo destinationFileInfo = new FileInfo(System.IO.Path.Combine(TempDirectoryPath, file_to_backup));
+                        destinationFileInfo.Directory.Create();
+                        System.IO.Directory.Move(file_to_backup, System.IO.Path.Combine(TempDirectoryPath, file_to_backup));
+                    }
+                }
                 // C# struggles to delete folders if, for example, there's an active Windows Explorer looking into them.
                 bool successful = DeleteAsMuchAsPossible(GameDirectoryPath);
             }
@@ -98,6 +130,18 @@ namespace YandereSimulatorLauncher2.Logic
             {
                 System.IO.File.Delete(GameZipSaveLocation);
             }
+
+            // Now we restore our backup files.
+            if (!System.IO.Directory.Exists(TempDirectoryPath))
+            {
+                // Someone tampered with our files and deleted the backup, so we'll avoid trying to restore it.
+                return;
+            }
+
+            // A fun quirk of the backup structure we use: we can just move all of the files in Temp into the current directory. Brittle, so I'm open to improvements.
+            CopyAsMuchAsPossible(TempDirectoryPath, ".");
+            // Now that we've copied everything back over, we can delete the backup.
+            DeleteAsMuchAsPossible(TempDirectoryPath);
         }
 
         public async static Task<bool> DoesUpdateExist()
@@ -248,7 +292,7 @@ namespace YandereSimulatorLauncher2.Logic
         private static List<string> SplitToLines(string inString)
         {
             List<string> output = new List<string>();
-            
+
             using (StringReader reader = new StringReader(inString))
             {
                 string line = reader.ReadLine();
@@ -324,6 +368,44 @@ namespace YandereSimulatorLauncher2.Logic
             catch (Exception)
             {
                 totalSuccess = false;
+            }
+
+            return totalSuccess;
+        }
+
+        private static bool CopyAsMuchAsPossible(string inPath, string outPath)
+        {
+            if (!Directory.Exists(inPath))
+            {
+                return false;
+            }
+
+            bool totalSuccess = true;
+            DirectoryInfo inDirectory = new DirectoryInfo(inPath);
+            DirectoryInfo[] childDirectories = inDirectory.GetDirectories();
+            FileInfo[] childFiles = inDirectory.GetFiles();
+            Directory.CreateDirectory(outPath);
+
+            foreach (FileInfo currentFile in childFiles)
+            {
+                try
+                {
+                    if (currentFile.Attributes.HasFlag(FileAttributes.ReparsePoint)) { continue; }
+                    currentFile.Attributes = FileAttributes.Normal;
+                    currentFile.CopyTo(Path.Combine(outPath, currentFile.Name), true);
+                }
+                catch (Exception)
+                {
+                    totalSuccess = false;
+                }
+            }
+
+            foreach (DirectoryInfo currentDir in childDirectories)
+            {
+                if (CopyAsMuchAsPossible(currentDir.FullName, Path.Combine(outPath, currentDir.Name)) == false)
+                {
+                    totalSuccess = false;
+                }
             }
 
             return totalSuccess;
